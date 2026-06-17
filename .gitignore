@@ -1,0 +1,15 @@
+node_modules
+dist
+
+# Lockfile intentionally untracked: npm's cross-platform optional-dependency
+# handling for esbuild produces lockfiles that fail `npm ci` on Cloudflare's
+# linux/x64 builders. Without a lockfile, the builder runs `npm install`, which
+# resolves natively and skips non-matching platform packages.
+package-lock.json
+dist-ssr
+*.local
+.DS_Store
+.vite
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
