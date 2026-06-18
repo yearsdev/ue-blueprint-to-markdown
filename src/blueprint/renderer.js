@@ -159,14 +159,16 @@ function isOperatorCallFunction(node) {
 // The actor/object a node reads through. Function calls and member-variable
 // gets carry a "self" (Target) pin: when it's wired, the operand reads off that
 // source; when it's left default, it reads off the owning blueprint (Self).
-// Returns null when the node has no self pin at all (a static library call or a
-// plain local variable), so those stay unannotated.
+// Returns null — no annotation — when the node has no self pin at all (a plain
+// local variable), or when the self pin targets a class default object: that is
+// a static library call (KismetMathLibrary.FClamp, ...) with no instance, so a
+// "Self." prefix would be misleading.
 function describeTargetContext(node, byName, depth, enumRegistry) {
   const selfPin = node.pins.find(
     (p) => p.PinName === "self" && p.Direction === "EGPD_Input" && !isExecPin(p)
   );
   if (!selfPin) return null;
-  if (selfPin.LinkedTo.length === 0) return "Self";
+  if (selfPin.LinkedTo.length === 0) return selfPin.DefaultObject ? null : "Self";
   const link = selfPin.LinkedTo[0];
   const resolved = resolveThroughKnots(link.nodeName, link.pinName, byName);
   return describeDataSource(byName.get(resolved.nodeName), resolved.pinName, byName, depth + 1, enumRegistry);
@@ -174,7 +176,26 @@ function describeTargetContext(node, byName, depth, enumRegistry) {
 
 function describeDataSource(node, pinName, byName, depth, enumRegistry) {
   if (!node) return "?";
-  if (depth > 3) return (node.friendly || "?").replace(/^(?:Validated Get: |Get |SET )/, "");
+  // Expansion depth guard. Set high enough to walk a realistic operand chain to
+  // its leaves (e.g. FClamp(ResistMod * Caster - Self.Toll * 0.15, 0, 0.85) is 5
+  // levels deep) without dropping the inline constants that live at the bottom.
+  // The subline width cap in renderChain is what keeps the resulting string from
+  // running away; this guard only backstops pathological / cyclic graphs.
+  if (depth > 8) return (node.friendly || "?").replace(/^(?:Validated Get: |Get |SET )/, "");
+
+  // Function parameters, event outputs and tunnel/macro boundary pins read by
+  // their pin name (the parameter, e.g. "CasterToll"), not the node's verbose
+  // friendly ("Function Entry: CheckDebuffSpellResistance"). Without this every
+  // parameter reference bloats the expression until the real operands (and their
+  // literals) get clipped by the subline width cap.
+  if (node.nodeClass === "K2Node_FunctionEntry" || node.nodeClass === "K2Node_CustomEvent" ||
+      node.nodeClass === "K2Node_Event" || node.nodeClass === "K2Node_Tunnel") {
+    const srcPin = node.pins.find((p) => p.PinName === pinName && p.Direction === "EGPD_Output");
+    const label = srcPin && srcPin.PinFriendlyName
+      ? srcPin.PinFriendlyName
+      : pinName.replace(/_\d+_[A-F0-9]+$/i, "");
+    if (label) return label;
+  }
 
   if (node.nodeClass === "K2Node_VariableGet") {
     const name = node.friendly.replace(/^(?:Validated Get: |Get )/, "");
@@ -220,7 +241,8 @@ function describeDataSource(node, pinName, byName, depth, enumRegistry) {
     // than a bare "Multiply Float Float()" that hides what's being combined.
     if (isOperatorCallFunction(node)) return describeBinaryOp(node, byName, depth, enumRegistry);
     const ctx = describeTargetContext(node, byName, depth, enumRegistry);
-    return (ctx ? ctx + "." : "") + node.friendly + "()";
+    const args = describeCallArguments(node, byName, depth, enumRegistry);
+    return (ctx ? ctx + "." : "") + node.friendly + "(" + args.join(", ") + ")";
   }
   if (node.nodeClass === "K2Node_DynamicCast") {
     // Show what's being cast (e.g. Cast To Enemy(ArrayElem)) so a cast feeding a
@@ -297,6 +319,29 @@ function resolveImplicitEnumDefault(pin, enumRegistry) {
   return formatEnumLabel(entryName, info);
 }
 
+// Whether a data-input pin contributes anything to an operand/argument list:
+// a wire, an inline literal, or (for an enum) the implicit zeroth-member
+// default. Pins that have none of these (e.g. a hidden ErrorTolerance pin on a
+// comparison node) carry no information and must be skipped — otherwise they
+// render as a spurious "?" operand, e.g. "A >= B >= ?".
+function operandHasValue(pin, enumRegistry) {
+  if (pin.LinkedTo.length > 0) return true;
+  if (pinLiteralValue(pin) !== null) return true;
+  return resolveImplicitEnumDefault(pin, enumRegistry) !== null;
+}
+
+// Tidy a serialized numeric literal for display: UE writes floats with a fixed
+// six-decimal tail ("0.150000", "1.000000"), which is both noisy and long
+// enough to push a nested expression past the subline width cap. Trim trailing
+// zeros (keeping one after the point) so "0.150000" -> "0.15", "1.000000" ->
+// "1.0". Integers and non-numeric tokens (names, bools, enums) pass through
+// untouched.
+function formatNumericLiteral(value) {
+  if (typeof value !== "string" || !/^-?\d+\.\d+$/.test(value)) return value;
+  const trimmed = value.replace(/0+$/, "");
+  return trimmed.endsWith(".") ? trimmed + "0" : trimmed;
+}
+
 // Resolve one operand of a comparison/math/equality node: follow the wire if
 // connected, otherwise show the inline literal (numeric or enum). Reads the
 // effective literal via pinLiteralValue so a constant UE serialized only as
@@ -311,7 +356,7 @@ function describeOperand(pin, byName, depth, enumRegistry) {
   const literal = pinLiteralValue(pin);
   if (literal === null) return resolveImplicitEnumDefault(pin, enumRegistry) || "?";
   const enumInfo = resolveEnumDefault(pin, enumRegistry);
-  return enumInfo ? formatEnumLabel(literal, enumInfo) : literal;
+  return enumInfo ? formatEnumLabel(literal, enumInfo) : formatNumericLiteral(literal);
 }
 
 // Enum comparison nodes (Equal/Not Equal on an enum) carry operands A and B,
@@ -326,9 +371,29 @@ function describeEnumEquality(node, byName, depth, enumRegistry) {
   return lhs + " " + symbol + " " + rhs;
 }
 
+// Resolve the visible arguments of a non-operator function call (FClamp,
+// RandomFloatInRange, ...) so the call renders as "FClamp(Value, 0.0, 0.85)"
+// with both wired inputs and inline literals, instead of a bare "FClamp()" that
+// silently discards the operands — and, worse, severs the whole subtree feeding
+// a wired input from the export. Skips the "self"/Target pin (already shown as
+// the call's context) and any pin carrying no information: an unwired pin with
+// no literal (e.g. a hidden ErrorTolerance pin) would only render as a noisy "?".
+function describeCallArguments(node, byName, depth, enumRegistry) {
+  const args = [];
+  for (const p of node.pins) {
+    if (isExecPin(p)) continue;
+    if (p.Direction !== "EGPD_Input") continue;
+    if (p.PinName === "self") continue;
+    if (!operandHasValue(p, enumRegistry)) continue;
+    args.push(describeOperand(p, byName, depth, enumRegistry));
+  }
+  return args;
+}
+
 function describeBinaryOp(node, byName, depth, enumRegistry) {
   const inputs = node.pins
-    .filter((p) => p.Direction === "EGPD_Input" && !isExecPin(p) && p.PinName !== "self")
+    .filter((p) => p.Direction === "EGPD_Input" && !isExecPin(p) && p.PinName !== "self" &&
+      operandHasValue(p, enumRegistry))
     .map((p) => describeOperand(p, byName, depth, enumRegistry));
 
   let symbol = null;
@@ -347,6 +412,13 @@ function describeBinaryOp(node, byName, depth, enumRegistry) {
   if (!symbol) symbol = node.friendly;
   return inputs.join(" " + symbol + " ");
 }
+
+// Max characters for a data-pin subline inside a flow box before it's clipped
+// with an ellipsis. Generous enough to keep a fully-resolved nested expression
+// (a clamp/lerp of a math chain with its inline constants) intact — these are
+// documentation exports rendered inside a fenced code block, so width is cheap
+// and dropping a literal is not. Box width auto-fits the longest subline.
+const SUBLINE_MAX = 120;
 
 // -- Box drawing helpers ----------------------------------------------------
 
@@ -443,11 +515,11 @@ function renderChain(node, byName, ctx, visited, indent = 0) {
   if (ctx.showDataPins) {
     const inputs = getDataInputs(node, byName, ctx.enumRegistry);
     for (const di of inputs) {
-      const v = di.value.length > 56 ? di.value.slice(0, 53) + "..." : di.value;
+      const v = di.value.length > SUBLINE_MAX ? di.value.slice(0, SUBLINE_MAX - 3) + "..." : di.value;
       sublines.push(di.name + ": " + v);
       if (di.bindings) {
         for (const b of di.bindings) {
-          const bv = b.length > 60 ? b.slice(0, 57) + "..." : b;
+          const bv = b.length > SUBLINE_MAX ? b.slice(0, SUBLINE_MAX - 3) + "..." : b;
           sublines.push("    " + bv);
         }
       }

@@ -1,4 +1,6 @@
 import { describe, it, expect } from "vitest";
+import { readFileSync } from "node:fs";
+import { fileURLToPath } from "node:url";
 import {
   parseBlueprint, extractFunctionMetadata, deriveFilenameBase, renderASCII,
   generateReviewNotes,
@@ -1077,5 +1079,67 @@ describe("Operand source and target annotation", () => {
     const ascii = renderASCII(r, { showDataPins: true });
     expect(ascii).toMatch(/Counter: <- LoopIndex/);
     expect(ascii).not.toMatch(/Self\.LoopIndex/);
+  });
+});
+
+// Real export from the Banishment editor: BP_NPCBase.CheckDebuffSpellResistance.
+// A regression net for the class of bug where a raw constant typed into a node
+// never reaches the export. The function nests inline literals several ways:
+//   - operands of recognized operators        (>= , + , / , < , *)
+//   - arguments of plain library calls         (FClamp, RandomFloatInRange)
+//   - constants buried in a chain feeding a    (the 0.15 multiplier feeds
+//     wired call argument                       FClamp's Value pin)
+const SPELL_RESIST_FIXTURE = readFileSync(
+  fileURLToPath(new URL("./fixtures/npc-spell-resist.txt", import.meta.url)),
+  "utf8"
+);
+
+describe("inline literal fidelity (CheckDebuffSpellResistance fixture)", () => {
+  const r = parseBlueprint(SPELL_RESIST_FIXTURE);
+  const ascii = renderASCII(r, { showDataPins: true });
+
+  it("surfaces literals typed into operator operands (int math chain)", () => {
+    // CasterToll >= CasterToll + 4 + CasterToll / 6 — the 4 and 6 were typed
+    // directly into the Add/Divide B pins.
+    expect(ascii).toMatch(/CasterToll \+ 4/);
+    expect(ascii).toMatch(/CasterToll \/ 6/);
+  });
+
+  it("surfaces arguments of plain library calls (FClamp / RandomFloatInRange)", () => {
+    // Previously these rendered as bare "F Clamp()" / "Random Float In Range()"
+    // and dropped every argument. The clamp bounds (0.0, 0.85) and the random
+    // range (0.0, 1.0) are all inline constants that must show.
+    expect(ascii).toMatch(/F Clamp\(/);
+    expect(ascii).toMatch(/Random Float In Range\(0\.0, 1\.0\)/);
+    expect(ascii).toMatch(/0\.85/);
+  });
+
+  it("does not prefix a static library call with 'Self.'", () => {
+    // FClamp / RandomFloatInRange target the KismetMathLibrary class default
+    // object, not an instance — so no "Self." (or any) target prefix.
+    expect(ascii).not.toMatch(/Self\.F Clamp/);
+    expect(ascii).not.toMatch(/Self\.Random Float In Range/);
+  });
+
+  it("surfaces a constant buried in a chain feeding a wired call argument", () => {
+    // The 0.15 multiplier sits two operators upstream of FClamp's Value pin.
+    // When FClamp rendered as "()", this whole subtree was severed.
+    expect(ascii).toMatch(/\* 0\.15\b/);
+  });
+
+  it("surfaces the 0.95 comparison literal", () => {
+    expect(ascii).toMatch(/< 0\.95\b/);
+  });
+
+  it("does not leave '?' placeholders for hidden no-value pins (ErrorTolerance)", () => {
+    // The comparison nodes carry a hidden ErrorTolerance input with no wire and
+    // no literal; it must not render as a spurious "A >= B >= ?" operand.
+    expect(ascii).not.toMatch(/>= \?/);
+    expect(ascii).not.toMatch(/< \?/);
+  });
+
+  it("trims UE's six-decimal float tail for readability", () => {
+    expect(ascii).not.toMatch(/0\.150000/);
+    expect(ascii).not.toMatch(/1\.000000/);
   });
 });
