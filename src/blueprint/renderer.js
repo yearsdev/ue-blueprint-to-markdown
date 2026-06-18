@@ -390,11 +390,41 @@ function describeCallArguments(node, byName, depth, enumRegistry) {
   return args;
 }
 
+// Whether a node renders as an infix binary expression ("A op B"). When such a
+// node feeds an operand of an enclosing operator, its rendered form must be
+// wrapped in parentheses so the export reflects the actual node nesting rather
+// than leaving the reader to reconstruct it from infix precedence — UE's graph
+// has no precedence, only wires, so "A * B - C" is genuinely ambiguous as text.
+function isBinaryOpNode(node) {
+  if (!node) return false;
+  return (
+    node.nodeClass === "K2Node_CommutativeAssociativeBinaryOperator" ||
+    node.nodeClass === "K2Node_PromotableOperator" ||
+    node.nodeClass === "K2Node_EnumEquality" ||
+    node.nodeClass === "K2Node_EnumInequality" ||
+    isOperatorCallFunction(node)
+  );
+}
+
+// Resolve one operand of a binary op, parenthesizing it when its source is
+// itself a binary op so nesting is explicit: "(A * B) - (C * D)", not the
+// precedence-dependent "A * B - C * D". Only the wired-source case can nest;
+// inline literals and leaf variables never need wrapping.
+function describeBinaryOperand(pin, byName, depth, enumRegistry) {
+  const rendered = describeOperand(pin, byName, depth, enumRegistry);
+  if (pin.LinkedTo.length > 0) {
+    const link = pin.LinkedTo[0];
+    const resolved = resolveThroughKnots(link.nodeName, link.pinName, byName);
+    if (isBinaryOpNode(byName.get(resolved.nodeName))) return "(" + rendered + ")";
+  }
+  return rendered;
+}
+
 function describeBinaryOp(node, byName, depth, enumRegistry) {
   const inputs = node.pins
     .filter((p) => p.Direction === "EGPD_Input" && !isExecPin(p) && p.PinName !== "self" &&
       operandHasValue(p, enumRegistry))
-    .map((p) => describeOperand(p, byName, depth, enumRegistry));
+    .map((p) => describeBinaryOperand(p, byName, depth, enumRegistry));
 
   let symbol = null;
   const fnRef = matchField(node.raw, "FunctionReference");
@@ -513,15 +543,18 @@ function renderChain(node, byName, ctx, visited, indent = 0) {
   const title = node.friendly;
   const sublines = [];
   if (ctx.showDataPins) {
+    // Return nodes carry the function's final computed expression(s) — the one
+    // place where clipping a formula mid-term defeats the whole point of the
+    // export (the reader can no longer verify the result from the text). Render
+    // them in full regardless of width; everywhere else the cap keeps boxes from
+    // running away on an incidental deep chain.
+    const noClip = node.nodeClass === "K2Node_FunctionResult";
+    const clip = (s) => (!noClip && s.length > SUBLINE_MAX ? s.slice(0, SUBLINE_MAX - 3) + "..." : s);
     const inputs = getDataInputs(node, byName, ctx.enumRegistry);
     for (const di of inputs) {
-      const v = di.value.length > SUBLINE_MAX ? di.value.slice(0, SUBLINE_MAX - 3) + "..." : di.value;
-      sublines.push(di.name + ": " + v);
+      sublines.push(di.name + ": " + clip(di.value));
       if (di.bindings) {
-        for (const b of di.bindings) {
-          const bv = b.length > SUBLINE_MAX ? b.slice(0, SUBLINE_MAX - 3) + "..." : b;
-          sublines.push("    " + bv);
-        }
+        for (const b of di.bindings) sublines.push("    " + clip(b));
       }
     }
   }
