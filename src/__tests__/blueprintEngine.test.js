@@ -1279,3 +1279,112 @@ describe("Return node expressions are never truncated", () => {
     expect(setLine).toBeTruthy();
   });
 });
+
+describe("Counted-but-undrawn exec node detection + reroute fan-out traversal", () => {
+  // A reroute (Knot) on an exec line whose OUTPUT fans out to two downstream
+  // nodes. resolveThroughKnots used to follow only LinkedTo[0], so the second
+  // target silently vanished from the diagram — never walked, never drawn,
+  // still counted by the inventory. This is the class of bug the render warning
+  // exists to surface and the fan-out traversal exists to prevent.
+  const FANOUT_REROUTE = [
+    'Begin Object Class=/Script/BlueprintGraph.K2Node_CustomEvent Name="Event_Start"',
+    '   CustomFunctionName="Start"',
+    '   CustomProperties Pin (PinId=E1,PinName="then",Direction="EGPD_Output",PinType.PinCategory="exec",LinkedTo=(Knot_0 K_IN,))',
+    'End Object',
+    'Begin Object Class=/Script/BlueprintGraph.K2Node_Knot Name="Knot_0"',
+    '   CustomProperties Pin (PinId=K_IN,PinName="InputPin",PinType.PinCategory="exec",LinkedTo=(Event_Start E1,))',
+    '   CustomProperties Pin (PinId=K_OUT,PinName="OutputPin",Direction="EGPD_Output",PinType.PinCategory="exec",LinkedTo=(Node_A A1,Node_B B1,))',
+    'End Object',
+    'Begin Object Class=/Script/BlueprintGraph.K2Node_CallFunction Name="Node_A"',
+    '   FunctionReference=(MemberName="DoThingA")',
+    '   CustomProperties Pin (PinId=A1,PinName="execute",PinType.PinCategory="exec",LinkedTo=(Knot_0 K_OUT,))',
+    'End Object',
+    'Begin Object Class=/Script/BlueprintGraph.K2Node_CallFunction Name="Node_B"',
+    '   FunctionReference=(MemberName="DoThingB")',
+    '   CustomProperties Pin (PinId=B1,PinName="execute",PinType.PinCategory="exec",LinkedTo=(Knot_0 K_OUT,))',
+    'End Object',
+  ].join("\n");
+
+  it("walks every downstream branch of a fan-out reroute (both targets drawn)", () => {
+    const r = parseBlueprint(FANOUT_REROUTE);
+    const ascii = renderASCII(r, { showDataPins: false });
+    expect(ascii).toMatch(/Do Thing A/);
+    expect(ascii).toMatch(/Do Thing B/);
+  });
+
+  it("emits no undrawn-node warning once both reroute branches are walked", () => {
+    const r = parseBlueprint(FANOUT_REROUTE);
+    const ascii = renderASCII(r, { showDataPins: false });
+    expect(ascii).not.toMatch(/RENDER WARNING/);
+  });
+
+  // A converging case: two switch outputs both routed (through a reroute) into
+  // one handler. The fan-in must be counted as a 2-path join AND the handler
+  // must be drawn exactly once — never dropped.
+  const CONVERGING_SWITCH = [
+    'Begin Object Class=/Script/BlueprintGraph.K2Node_CustomEvent Name="Evt"',
+    '   CustomFunctionName="Route"',
+    '   CustomProperties Pin (PinId=E1,PinName="then",Direction="EGPD_Output",PinType.PinCategory="exec",LinkedTo=(Sw S_IN,))',
+    'End Object',
+    'Begin Object Class=/Script/BlueprintGraph.K2Node_SwitchInt Name="Sw"',
+    '   CustomProperties Pin (PinId=S_IN,PinName="execute",PinType.PinCategory="exec",LinkedTo=(Evt E1,))',
+    '   CustomProperties Pin (PinId=S0,PinName="0",Direction="EGPD_Output",PinType.PinCategory="exec",LinkedTo=(Knot_R R_IN,))',
+    '   CustomProperties Pin (PinId=S1,PinName="1",Direction="EGPD_Output",PinType.PinCategory="exec",LinkedTo=(Handler H1,))',
+    'End Object',
+    'Begin Object Class=/Script/BlueprintGraph.K2Node_Knot Name="Knot_R"',
+    '   CustomProperties Pin (PinId=R_IN,PinName="InputPin",PinType.PinCategory="exec",LinkedTo=(Sw S0,))',
+    '   CustomProperties Pin (PinId=R_OUT,PinName="OutputPin",Direction="EGPD_Output",PinType.PinCategory="exec",LinkedTo=(Handler H1,))',
+    'End Object',
+    'Begin Object Class=/Script/BlueprintGraph.K2Node_CallFunction Name="Handler"',
+    '   FunctionReference=(MemberName="HandleCase")',
+    '   CustomProperties Pin (PinId=H1,PinName="execute",PinType.PinCategory="exec",LinkedTo=(Sw S1,Knot_R R_OUT,))',
+    'End Object',
+  ].join("\n");
+
+  it("counts a reroute-mediated convergence as a join and draws the handler once", () => {
+    const r = parseBlueprint(CONVERGING_SWITCH);
+    const ascii = renderASCII(r, { showDataPins: false });
+    expect(ascii).not.toMatch(/RENDER WARNING/);
+    // Both switch cases reach the handler, so it's a 2-path join rendered via an
+    // anchor rather than inlined twice.
+    expect(ascii).toMatch(/joined from 2 paths/);
+    const handlerBoxes = (ascii.match(/│ Handle Case/g) || []).length;
+    expect(handlerBoxes).toBe(1);
+  });
+
+  // The warning itself: a node with an exec pin that no path reaches must be
+  // listed by friendly name, class, and internal name so it can be found in the
+  // source paste. (Simulates a residual traversal gap the diff is meant to flag.)
+  it("flags an executable node that the walk never reaches", () => {
+    const payload = [
+      'Begin Object Class=/Script/BlueprintGraph.K2Node_CustomEvent Name="Evt"',
+      '   CustomFunctionName="Start"',
+      '   CustomProperties Pin (PinId=E1,PinName="then",Direction="EGPD_Output",PinType.PinCategory="exec",LinkedTo=(Reached R1,))',
+      'End Object',
+      'Begin Object Class=/Script/BlueprintGraph.K2Node_CallFunction Name="Reached"',
+      '   FunctionReference=(MemberName="DoReached")',
+      '   CustomProperties Pin (PinId=R1,PinName="execute",PinType.PinCategory="exec",LinkedTo=(Evt E1,))',
+      'End Object',
+      // Has an exec INPUT wired from nothing reachable and no exec output, so it
+      // is neither an entry, an orphan, nor reachable — a pure silent omission.
+      'Begin Object Class=/Script/BlueprintGraph.K2Node_CallFunction Name="Stranded"',
+      '   FunctionReference=(MemberName="DoStranded")',
+      '   CustomProperties Pin (PinId=ST1,PinName="execute",PinType.PinCategory="exec")',
+      'End Object',
+    ].join("\n");
+    const r = parseBlueprint(payload);
+    const ascii = renderASCII(r, { showDataPins: false });
+    expect(ascii).toMatch(/RENDER WARNING: 1 executable node/);
+    expect(ascii).toMatch(/Do Stranded \(K2Node_CallFunction\) \[Stranded\]/);
+    // The warning sits at the very top, ahead of the diagram body.
+    expect(ascii.indexOf("RENDER WARNING")).toBeLessThan(ascii.indexOf("Custom Event"));
+  });
+
+  // Pure data nodes have no exec pins and are rendered inline, never as boxes —
+  // they must NOT be mistaken for undrawn exec nodes.
+  it("does not flag pure data nodes (no exec pins) as undrawn", () => {
+    const r = parseBlueprint(TWO_NODE_PAYLOAD);
+    const ascii = renderASCII(r, { showDataPins: false });
+    expect(ascii).not.toMatch(/RENDER WARNING/);
+  });
+});

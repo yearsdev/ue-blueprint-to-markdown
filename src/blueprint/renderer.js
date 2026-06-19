@@ -5,7 +5,7 @@
 // ============================================================================
 
 import {
-  matchField, isExecPin, findEntryNodes, findOrphanNodes, isBranchLike,
+  matchField, isExecPin, findEntryNodes, findOrphanNodes, isBranchLike, isExecutableNode,
 } from "./common.js";
 import {
   parseEnumMap, formatEnumLabel, resolveEnumDefault, pinLiteralValue, extractEnumName,
@@ -31,6 +31,53 @@ function resolveThroughKnots(targetName, targetPinName, byName, visited = new Se
   return resolveThroughKnots(next.nodeName, next.pinName, byName, visited);
 }
 
+// resolveThroughKnots collapses a reroute to a SINGLE downstream target by
+// following LinkedTo[0]. That's correct for backward DATA resolution — a data
+// input pin has exactly one source — but wrong for FORWARD EXEC traversal: a
+// reroute sitting on an exec line can fan its output out to several downstream
+// inputs (a hub driving N nodes from one wire), and following only the first
+// silently severs every other branch from the walk. Those nodes are never
+// visited and never drawn — the omission the render warning now surfaces.
+//
+// This variant expands a knot into ALL of its downstream targets, recursing
+// through chained reroutes. The shared `seen` set de-dupes so a diamond of
+// reroutes that converges again yields one entry per real target; the shared
+// `visited` set guards cyclic reroute loops (and is safe across sibling
+// branches because the first visit to a knot already expands all of its
+// targets, so a later branch hitting the same knot loses nothing).
+function resolveExecThroughKnots(
+  targetName, targetPinName, byName, visited = new Set(), out = [], seen = new Set()
+) {
+  const pushUnique = (nodeName, pinName) => {
+    const key = nodeName + "::" + pinName;
+    if (seen.has(key)) return;
+    seen.add(key);
+    out.push({ nodeName, pinName });
+  };
+  const node = byName.get(targetName);
+  if (!node || node.nodeClass !== "K2Node_Knot") {
+    pushUnique(targetName, targetPinName);
+    return out;
+  }
+  if (visited.has(targetName)) return out;
+  visited.add(targetName);
+
+  const enteredOutput = node.pins.find((p) => p.Direction === "EGPD_Output" && p.PinName === targetPinName);
+  const otherSidePin = node.pins.find((p) =>
+    enteredOutput ? p.Direction === "EGPD_Input" : p.Direction === "EGPD_Output"
+  );
+  if (!otherSidePin || otherSidePin.LinkedTo.length === 0) {
+    // A dangling reroute resolves to the knot itself; the caller (which filters
+    // unknown targets) drops it, matching the single-target resolver's behavior.
+    pushUnique(targetName, targetPinName);
+    return out;
+  }
+  for (const link of otherSidePin.LinkedTo) {
+    resolveExecThroughKnots(link.nodeName, link.pinName, byName, visited, out, seen);
+  }
+  return out;
+}
+
 // -- Exec graph analysis -----------------------------------------------------
 
 function computeIncomingExecCounts(parseResult) {
@@ -41,14 +88,18 @@ function computeIncomingExecCounts(parseResult) {
     for (const pin of node.pins) {
       if (!isExecPin(pin)) continue;
       if (pin.Direction !== "EGPD_Output") continue;
+      // Expand through reroutes to every downstream target so a fan-out reroute
+      // contributes a predecessor edge to each node it actually drives — without
+      // this, join detection undercounts and a converging branch can be missed.
       for (const link of pin.LinkedTo) {
-        const resolved = resolveThroughKnots(link.nodeName, link.pinName, parseResult.byName);
-        const target = resolved.nodeName;
-        if (!predecessors.has(target)) predecessors.set(target, new Set());
-        // Encode source + target pin so the join header can disambiguate two
-        // wires that hit different input pins on a multi-entry target (e.g. one
-        // wire to ForEachLoopWithBreak.execute and another to BreakLoop).
-        predecessors.get(target).add(node.name + "::" + pin.PinName + "::" + resolved.pinName);
+        for (const resolved of resolveExecThroughKnots(link.nodeName, link.pinName, parseResult.byName)) {
+          const target = resolved.nodeName;
+          if (!predecessors.has(target)) predecessors.set(target, new Set());
+          // Encode source + target pin so the join header can disambiguate two
+          // wires that hit different input pins on a multi-entry target (e.g. one
+          // wire to ForEachLoopWithBreak.execute and another to BreakLoop).
+          predecessors.get(target).add(node.name + "::" + pin.PinName + "::" + resolved.pinName);
+        }
       }
     }
   }
@@ -67,9 +118,13 @@ function getOutgoingExecLinks(node, byName, includeUnconnected) {
       }
       continue;
     }
+    // One exec output can drive several inputs (directly or fanned out through a
+    // reroute), so expand every wire into all of its real downstream targets.
+    // Following only the first would drop the rest of the branch from the walk.
     for (const link of p.LinkedTo) {
-      const resolved = resolveThroughKnots(link.nodeName, link.pinName, byName);
-      out.push({ pinName: p.PinName, friendlyName: p.PinFriendlyName, target: resolved });
+      for (const target of resolveExecThroughKnots(link.nodeName, link.pinName, byName)) {
+        out.push({ pinName: p.PinName, friendlyName: p.PinFriendlyName, target });
+      }
     }
   }
   return out;
@@ -539,6 +594,10 @@ function renderChain(node, byName, ctx, visited, indent = 0) {
     return lines;
   }
   visited.add(node.name);
+  // Record that this node was actually placed as a box. ctx.drawnNodes persists
+  // across every walk (entries, join bodies, orphans) so the final diff against
+  // the inventory's executable-node set catches anything the traversal skipped.
+  ctx.drawnNodes.add(node.name);
 
   const title = node.friendly;
   const sublines = [];
@@ -683,6 +742,29 @@ function renderJoinHeader(node, ctx, predecessors, byName) {
   );
 }
 
+// Cap the explicit node list so a graph with a large gap doesn't bury the rest
+// of the export under a wall of names. The headline count is always exact.
+const UNDRAWN_LIST_CAP = 25;
+
+// Build the banner that flags executable nodes the inventory counted but the
+// exec-graph walk never placed. The point is to convert a silent omission — a
+// node that quietly vanishes from the diagram — into a loud, greppable flag at
+// the top of the export, with enough identity (friendly, class, internal name)
+// to find each missing node in the source paste.
+function buildUndrawnWarning(undrawn) {
+  const head =
+    "⚠️  RENDER WARNING: " + undrawn.length + " executable node(s) were counted in the\n" +
+    "    inventory but never drawn in the flow below. The exec-graph walk did not\n" +
+    "    reach them — this is a silent omission (suspect reroute fan-out or a\n" +
+    "    converging join). Investigate these nodes:";
+  const shown = undrawn.slice(0, UNDRAWN_LIST_CAP);
+  const rows = shown.map((n) => "      - " + n.friendly + " (" + n.nodeClass + ") [" + n.name + "]");
+  if (undrawn.length > shown.length) {
+    rows.push("      … and " + (undrawn.length - shown.length) + " more");
+  }
+  return [head, ...rows].join("\n");
+}
+
 export function renderASCII(parseResult, opts) {
   const { nodes, byName } = parseResult;
   const entries = findEntryNodes(nodes);
@@ -701,6 +783,7 @@ export function renderASCII(parseResult, opts) {
     joinQueue: new Map(),
     anchorIds: new Map(),
     enumRegistry: parseResult.enumRegistry,
+    drawnNodes: new Set(),
   };
 
   const entrySections = [];
@@ -736,5 +819,14 @@ export function renderASCII(parseResult, opts) {
     );
   }
 
-  return sections.join("\n\n" + "═".repeat(40) + "\n\n");
+  const body = sections.join("\n\n" + "═".repeat(40) + "\n\n");
+
+  // Diff what the walk placed against every executable node the inventory
+  // counts. Anything counted but undrawn is a node the diagram silently lost;
+  // flag it at the very top so the omission is impossible to miss.
+  const undrawn = nodes.filter((n) => isExecutableNode(n) && !ctx.drawnNodes.has(n.name));
+  if (undrawn.length > 0) {
+    return buildUndrawnWarning(undrawn) + "\n\n" + "═".repeat(40) + "\n\n" + body;
+  }
+  return body;
 }

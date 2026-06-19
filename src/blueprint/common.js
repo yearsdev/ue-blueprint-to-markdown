@@ -161,6 +161,19 @@ export const PIN_REGEX = /CustomProperties Pin \(((?:[^()"]|"[^"]*"|\([^)]*\))*)
 
 export function isExecPin(p) { return p.PinCategory === "exec"; }
 
+// Whether a node belongs in the exec-flow diagram at all — i.e. the renderer is
+// expected to draw a box for it. A node qualifies when it carries at least one
+// exec pin (it participates in the execution graph), excluding reroute Knots,
+// which are compressed away by resolveThroughKnots and intentionally never
+// drawn. Pure data nodes (VariableGet, math ops, Make*) have no exec pins and
+// are rendered inline as data sources, so they're not "executable" in this
+// sense. Used to diff the inventory's full node count against what the walk
+// actually placed, surfacing exec nodes the traversal silently skipped.
+export function isExecutableNode(node) {
+  if (node.nodeClass === "K2Node_Knot") return false;
+  return node.pins.some(isExecPin);
+}
+
 export function hasIncomingExec(node) {
   for (const p of node.pins) {
     if (!isExecPin(p) || p.Direction !== "EGPD_Input") continue;
