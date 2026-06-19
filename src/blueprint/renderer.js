@@ -9,6 +9,7 @@ import {
 } from "./common.js";
 import {
   parseEnumMap, formatEnumLabel, resolveEnumDefault, pinLiteralValue, extractEnumName,
+  bareEnumeratorName,
 } from "./parser.js";
 
 // -- Knot / reroute compression ---------------------------------------------
@@ -286,7 +287,7 @@ function describeDataSource(node, pinName, byName, depth, enumRegistry) {
     if (valuePin && valuePin.DefaultValue) {
       const enumInfo = resolveEnumDefault(valuePin, enumRegistry);
       if (enumInfo) return formatEnumLabel(valuePin.DefaultValue, enumInfo);
-      return valuePin.DefaultValue;
+      return bareEnumeratorName(valuePin.DefaultValue);
     }
     return node.friendly;
   }
@@ -574,7 +575,9 @@ function labelForExecPin(node, out) {
   }
   if (node.nodeClass === "K2Node_SwitchEnum") {
     if (!node._enumMap) node._enumMap = parseEnumMap(node.raw);
-    const info = node._enumMap.get(out.pinName);
+    // Case pin names may be bare ("NewEnumerator0") while the EnumEntries table
+    // is qualified, so normalize before looking up the display name.
+    const info = node._enumMap.get(bareEnumeratorName(out.pinName));
     if (info) return formatEnumLabel(out.pinName, info);
   }
   return out.friendlyName || out.pinName;

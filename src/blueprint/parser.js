@@ -325,6 +325,19 @@ export function parseBlueprint(text) {
 
 // -- Enum helpers (used by parseBlueprint and by the renderer) ---------------
 
+// UserDefinedEnum enumerators serialize their authored name fully qualified —
+// "E_WeatherState::NewEnumerator0" — in the node's EnumEntries table, but the
+// same enumerator referenced from a pin DefaultValue or a SwitchEnum case pin
+// name often appears bare ("NewEnumerator0"), and which side carries the
+// "EnumName::" prefix varies by node. Strip the qualifier down to the bare
+// enumerator token so the display-name lookup matches regardless. Bare names
+// pass through untouched, so this never changes already-unqualified graphs.
+export function bareEnumeratorName(name) {
+  if (typeof name !== "string") return name;
+  const idx = name.lastIndexOf("::");
+  return idx >= 0 ? name.slice(idx + 2) : name;
+}
+
 export function parseEnumMap(rawBlock) {
   const lines = rawBlock.split(/\r?\n/);
   const entries = new Map();
@@ -343,7 +356,9 @@ export function parseEnumMap(rawBlock) {
   for (const [idx, entryName] of entries) {
     const idMatch = entryName.match(/(\d+)$/);
     const id = idMatch ? parseInt(idMatch[1], 10) : null;
-    result.set(entryName, { id, friendly: friendlies.get(idx) || null });
+    // Key by the bare enumerator token so a bare lookup (pin DefaultValue,
+    // switch case pin name) resolves against a qualified serialized entry.
+    result.set(bareEnumeratorName(entryName), { id, friendly: friendlies.get(idx) || null });
   }
   return result;
 }
@@ -382,8 +397,12 @@ export function pinLiteralValue(pin) {
 }
 
 export function formatEnumLabel(entryName, info) {
-  if (!info) return entryName;
-  const display = info.friendly || entryName;
+  // Strip any "EnumName::" qualifier so the fallback (no DisplayName override)
+  // shows the readable bare internal name rather than a path-qualified token,
+  // and never emits blank.
+  const bare = bareEnumeratorName(entryName);
+  if (!info) return bare;
+  const display = info.friendly || bare;
   return info.id !== null ? display + " (ID " + info.id + ")" : display;
 }
 
@@ -394,5 +413,7 @@ export function resolveEnumDefault(pin, enumRegistry) {
   const map = enumRegistry.get(enumName);
   if (!map) return null;
   const literal = pinLiteralValue(pin);
-  return literal !== null ? (map.get(literal) || null) : null;
+  // Normalize the literal the same way the map keys were normalized so a bare
+  // pin value matches a qualified serialized entry (and vice versa).
+  return literal !== null ? (map.get(bareEnumeratorName(literal)) || null) : null;
 }
