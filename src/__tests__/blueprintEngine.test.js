@@ -1478,3 +1478,98 @@ describe("Enum display names resolve under qualified (UserDefinedEnum) serializa
     expect(ascii).toMatch(/├── Windy/);
   });
 });
+
+describe("Select on Enum surfaces its index and per-case option values", () => {
+  // SET WeatherColor = Select on E_WeatherState. The Select is pure (no exec
+  // pins), so without expansion it collapses to a bare "Select on E_WeatherState"
+  // and the selector + the case→value mapping are invisible. Option pin names are
+  // the bare enumerators while the embedded table is qualified — the bindings
+  // must still resolve each case to its DisplayName.
+  const SELECT_PAYLOAD = [
+    'Begin Object Class=/Script/BlueprintGraph.K2Node_Event Name="Evt"',
+    '   CustomProperties Pin (PinId=E1,PinName="then",Direction="EGPD_Output",PinType.PinCategory="exec",LinkedTo=(SetC SC_IN,))',
+    'End Object',
+    'Begin Object Class=/Script/BlueprintGraph.K2Node_VariableSet Name="SetC"',
+    '   VariableReference=(MemberName="WeatherColor")',
+    '   CustomProperties Pin (PinId=SC_IN,PinName="execute",PinType.PinCategory="exec",LinkedTo=(Evt E1,))',
+    '   CustomProperties Pin (PinId=SC_V,PinName="WeatherColor",PinType.PinCategory="struct",LinkedTo=(Sel SEL_OUT,))',
+    '   CustomProperties Pin (PinId=SC_OUT,PinName="then",Direction="EGPD_Output",PinType.PinCategory="exec")',
+    'End Object',
+    'Begin Object Class=/Script/BlueprintGraph.K2Node_Select Name="Sel"',
+    '   SelectionEnum=Enum\'"/Game/Weather/E_WeatherState.E_WeatherState"\'',
+    '   EnumEntries(0)="E_WeatherState::NewEnumerator0"',
+    '   EnumEntries(1)="E_WeatherState::NewEnumerator1"',
+    '   EnumEntries(2)="E_WeatherState::NewEnumerator2"',
+    '   EnumFriendlyNames(0)=NSLOCTEXT("", "E_WeatherState::NewEnumerator0", "Clear")',
+    '   EnumFriendlyNames(1)=NSLOCTEXT("", "E_WeatherState::NewEnumerator1", "Rain")',
+    '   EnumFriendlyNames(2)=NSLOCTEXT("", "E_WeatherState::NewEnumerator2", "Storm")',
+    '   CustomProperties Pin (PinId=SEL_IDX,PinName="Index",PinType.PinCategory="byte",PinType.PinSubCategoryObject=Enum\'"/Game/Weather/E_WeatherState.E_WeatherState"\',LinkedTo=(Get G_OUT,))',
+    '   CustomProperties Pin (PinId=SEL0,PinName="NewEnumerator0",PinType.PinCategory="struct",DefaultValue="(R=1,G=1,B=1)")',
+    '   CustomProperties Pin (PinId=SEL1,PinName="NewEnumerator1",PinType.PinCategory="struct",LinkedTo=(GetRain GR_OUT,))',
+    '   CustomProperties Pin (PinId=SEL2,PinName="NewEnumerator2",PinType.PinCategory="struct",DefaultValue="(R=0,G=0,B=0)")',
+    '   CustomProperties Pin (PinId=SEL_OUT,PinName="ReturnValue",Direction="EGPD_Output",PinType.PinCategory="struct",LinkedTo=(SetC SC_V,))',
+    'End Object',
+    'Begin Object Class=/Script/BlueprintGraph.K2Node_VariableGet Name="Get"',
+    '   VariableReference=(MemberName="CurrentWeatherState")',
+    '   CustomProperties Pin (PinId=G_OUT,PinName="CurrentWeatherState",Direction="EGPD_Output",PinType.PinCategory="byte",PinType.PinSubCategoryObject=Enum\'"/Game/Weather/E_WeatherState.E_WeatherState"\',LinkedTo=(Sel SEL_IDX,))',
+    'End Object',
+    'Begin Object Class=/Script/BlueprintGraph.K2Node_VariableGet Name="GetRain"',
+    '   VariableReference=(MemberName="RainColor")',
+    '   CustomProperties Pin (PinId=GR_OUT,PinName="RainColor",Direction="EGPD_Output",PinType.PinCategory="struct",LinkedTo=(Sel SEL1,))',
+    'End Object',
+  ].join("\n");
+
+  it("surfaces the Index selector source", () => {
+    const r = parseBlueprint(SELECT_PAYLOAD);
+    const ascii = renderASCII(r, { showDataPins: true });
+    expect(ascii).toMatch(/Index ← CurrentWeatherState/);
+  });
+
+  it("labels each option by its enum DisplayName, with wired vs literal values", () => {
+    const r = parseBlueprint(SELECT_PAYLOAD);
+    const ascii = renderASCII(r, { showDataPins: true });
+    // Literal option uses '=', wired option uses '←'.
+    expect(ascii).toMatch(/Clear \(ID 0\) = \(R=1,G=1,B=1\)/);
+    expect(ascii).toMatch(/Rain \(ID 1\) ← RainColor/);
+    expect(ascii).toMatch(/Storm \(ID 2\) = \(R=0,G=0,B=0\)/);
+  });
+
+  it("keeps the bare 'Select on <Enum>' header and never leaks internal names", () => {
+    const r = parseBlueprint(SELECT_PAYLOAD);
+    const ascii = renderASCII(r, { showDataPins: true });
+    expect(ascii).toMatch(/<- Select on E_WeatherState/);
+    expect(ascii).not.toMatch(/NewEnumerator/);
+  });
+
+  it("does not crash and emits no enum labels for a non-enum (int) Select", () => {
+    // No SelectionEnum / no embedded table: options fall back to their pin
+    // friendly/name rather than enum DisplayNames.
+    const payload = [
+      'Begin Object Class=/Script/BlueprintGraph.K2Node_Event Name="Evt"',
+      '   CustomProperties Pin (PinId=E1,PinName="then",Direction="EGPD_Output",PinType.PinCategory="exec",LinkedTo=(SetC SC_IN,))',
+      'End Object',
+      'Begin Object Class=/Script/BlueprintGraph.K2Node_VariableSet Name="SetC"',
+      '   VariableReference=(MemberName="Picked")',
+      '   CustomProperties Pin (PinId=SC_IN,PinName="execute",PinType.PinCategory="exec",LinkedTo=(Evt E1,))',
+      '   CustomProperties Pin (PinId=SC_V,PinName="Picked",PinType.PinCategory="int",LinkedTo=(Sel SEL_OUT,))',
+      'End Object',
+      'Begin Object Class=/Script/BlueprintGraph.K2Node_Select Name="Sel"',
+      '   CustomProperties Pin (PinId=SEL_IDX,PinName="Index",PinType.PinCategory="int",LinkedTo=(Get G_OUT,))',
+      '   CustomProperties Pin (PinId=SEL0,PinName="Option 0",PinFriendlyName=NSLOCTEXT("","","Option 0"),PinType.PinCategory="int",DefaultValue="10")',
+      '   CustomProperties Pin (PinId=SEL1,PinName="Option 1",PinFriendlyName=NSLOCTEXT("","","Option 1"),PinType.PinCategory="int",DefaultValue="20")',
+      '   CustomProperties Pin (PinId=SEL_OUT,PinName="ReturnValue",Direction="EGPD_Output",PinType.PinCategory="int",LinkedTo=(SetC SC_V,))',
+      'End Object',
+      'Begin Object Class=/Script/BlueprintGraph.K2Node_VariableGet Name="Get"',
+      '   VariableReference=(MemberName="Choice")',
+      '   CustomProperties Pin (PinId=G_OUT,PinName="Choice",Direction="EGPD_Output",PinType.PinCategory="int",LinkedTo=(Sel SEL_IDX,))',
+      'End Object',
+    ].join("\n");
+    const r = parseBlueprint(payload);
+    const ascii = renderASCII(r, { showDataPins: true });
+    expect(ascii).toMatch(/<- Select/);
+    expect(ascii).toMatch(/Index ← Choice/);
+    expect(ascii).toMatch(/Option 0 = 10/);
+    expect(ascii).toMatch(/Option 1 = 20/);
+    expect(ascii).not.toMatch(/\(ID /);
+  });
+});
