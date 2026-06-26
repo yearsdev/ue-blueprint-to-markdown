@@ -21,12 +21,16 @@
 import {
   matchField, humanize, splitTopLevelBlocks, parsePinLine, PIN_REGEX,
 } from "../blueprint/common.js";
+import { looksLikeDataTable } from "../datatable/parser.js";
 
-// Cheap sniff used by the editor to route a paste to the material engine vs the
-// blueprint engine. Material pastes are full of MaterialGraphNode wrappers;
-// Blueprint pastes are full of K2Node_* classes and never mention them.
+// Cheap sniff used by the editor to route a paste to the right engine. Material
+// pastes are full of MaterialGraphNode wrappers; Blueprint pastes are full of
+// K2Node_* classes; a DataTable row is a bare UStruct literal with no Begin
+// Object blocks at all (looksLikeDataTable already excludes the graph formats),
+// so it's checked first.
 export function detectGraphType(text) {
   if (!text) return "blueprint";
+  if (looksLikeDataTable(text)) return "datatable";
   if (/Class=\/Script\/UnrealEd\.MaterialGraphNode/.test(text)) return "material";
   if (/\bMaterialExpression[A-Za-z]/.test(text) && !/\bK2Node_/.test(text)) return "material";
   return "blueprint";

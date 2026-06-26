@@ -22,6 +22,10 @@ import {
   extractMaterialMetadata, generateMaterialReviewNotes,
   generateMaterialMarkdown, deriveMaterialFilenameBase,
 } from "./materialEngine.js";
+import {
+  parseDataTable, renderDataTableASCII, extractDataTableMetadata,
+  generateDataTableReviewNotes, generateDataTableMarkdown, deriveDataTableFilenameBase,
+} from "./datatableEngine.js";
 
 // One pasted graph is either a Blueprint event graph or a material graph; the
 // two share this UI but run different engines. Pick the engine set once from
@@ -34,8 +38,15 @@ const MATERIAL_ENGINE = {
   parse: parseMaterial, render: renderMaterialASCII, notes: generateMaterialReviewNotes,
   meta: extractMaterialMetadata, markdown: generateMaterialMarkdown, filename: deriveMaterialFilenameBase,
 };
+const DATATABLE_ENGINE = {
+  parse: parseDataTable, render: renderDataTableASCII, notes: generateDataTableReviewNotes,
+  meta: extractDataTableMetadata, markdown: generateDataTableMarkdown, filename: deriveDataTableFilenameBase,
+};
 function engineFor(text) {
-  return detectGraphType(text) === "material" ? MATERIAL_ENGINE : BLUEPRINT_ENGINE;
+  const t = detectGraphType(text);
+  if (t === "material") return MATERIAL_ENGINE;
+  if (t === "datatable") return DATATABLE_ENGINE;
+  return BLUEPRINT_ENGINE;
 }
 
 const ACCENT = "#4a8ab8"; // Sky blue
@@ -103,11 +114,13 @@ export default function App() {
   // Surface parse errors as an error bar rather than silently dropping them.
   useEffect(() => {
     if (input.trim() && !parsed && !parseError) {
-      setParseError("Parse failed - check that the paste begins with `Begin Object Class=...`");
+      setParseError(graphType === "datatable"
+        ? "Parse failed - check that the paste is a DataTable row like `(Field=Value,...)`"
+        : "Parse failed - check that the paste begins with `Begin Object Class=...`");
     } else if (parsed && parseError) {
       setParseError(null);
     }
-  }, [input, parsed, parseError]);
+  }, [input, parsed, parseError, graphType]);
 
   // Auto-suggest the export filename when the name field is blank.
   const suggestedName = useMemo(() => {
@@ -287,7 +300,8 @@ export default function App() {
         </label>
         {parsed && (
           <span style={{ color: C.textDim, fontSize: mobile ? "11px" : "10px", marginLeft: "auto" }}>
-            {graphType === "material" ? "material · " : ""}{parsed.nodes.length} nodes
+            {graphType === "material" ? "material · " : graphType === "datatable" ? "data table · " : ""}
+            {parsed.nodes.length} {graphType === "datatable" ? (parsed.nodes.length === 1 ? "row" : "rows") : "nodes"}
             {metadata && (() => {
               const r = metadata.variableRefs;
               const n = (r ? r.self.size + r.local.size + r.external.size : 0);
@@ -301,7 +315,7 @@ export default function App() {
         <div style={splitStyle}>
           <div style={paneStyle()}>
             <div style={paneHeader}>
-              <span>{input.trim() ? (graphType === "material" ? "Material Paste" : "Blueprint Paste") : "Paste"}</span>
+              <span>{input.trim() ? (graphType === "material" ? "Material Paste" : graphType === "datatable" ? "Data Table Paste" : "Blueprint Paste") : "Paste"}</span>
               <span>{input ? input.length.toLocaleString() + " chars" : "empty"}</span>
             </div>
             <textarea
