@@ -3,9 +3,9 @@
 // DataTable pipeline. Mirrors material/analysis.js so the editor drives all
 // three engines through one call shape.
 //
-// The markdown export is the documentation artifact: a single row renders as a
-// vertical Field|Value table; many rows render as one columnar table (one line
-// per record), which is what makes pasting a whole table worthwhile.
+// The markdown export is the documentation artifact: rows always render as one
+// columnar table — field names as the header, one line per record — so a paste
+// reads like the data table it came from, whether it's one row or many.
 // ============================================================================
 
 import { formatValue } from "./parser.js";
@@ -78,15 +78,7 @@ export function generateDataTableMarkdown(parsed, ascii, opts) {
   if (o.timestamp) { lines.push(""); lines.push("Generated " + o.timestamp + "."); }
   lines.push("");
 
-  if (rows.length === 1) {
-    lines.push("## " + rows[0].name);
-    lines.push("");
-    lines.push("| Field | Value |");
-    lines.push("| --- | --- |");
-    for (const e of rows[0].entries) {
-      lines.push("| " + mdCell(e.key) + " | " + mdCell(formatValue(e.value)) + " |");
-    }
-  } else if (rows.length > 1) {
+  if (rows.length > 0) {
     lines.push("## Rows");
     lines.push("");
     lines.push("| Row | " + fields.map(mdCell).join(" | ") + " |");

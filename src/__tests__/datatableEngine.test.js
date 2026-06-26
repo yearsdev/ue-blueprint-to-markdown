@@ -84,13 +84,12 @@ describe("render + markdown", () => {
     expect(ascii).toMatch(/EffectType\s+—/);
   });
 
-  it("single row -> vertical Field|Value markdown table", () => {
+  it("single row -> horizontal columnar markdown table", () => {
     const p = parseDataTable(SPELL_ROW);
     const md = generateDataTableMarkdown(p, renderDataTableASCII(p), { name: "DT_NPCSpells_New" });
     expect(md).toContain("# DT_NPCSpells_New");
-    expect(md).toContain("| Field | Value |");
-    expect(md).toContain("| SpellName | Lesser Heal |");
-    expect(md).toContain("| Magnitude | 40 |");
+    expect(md).toContain("| Row | SpellID | SpellName |");
+    expect(md).toMatch(/\| Lesser_Heal \| Lesser_Heal \| Lesser Heal \|.*\| Heal \|/);
   });
 
   it("many rows -> columnar markdown table, one line per record", () => {
