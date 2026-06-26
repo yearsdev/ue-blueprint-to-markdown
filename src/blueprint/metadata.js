@@ -4,7 +4,7 @@
 // parsed graph, plus the markdown emitter for that metadata block.
 // ============================================================================
 
-import { matchField, isExecPin } from "./common.js";
+import { matchField, isExecPin, findEntryNodes } from "./common.js";
 
 function typeLabelFromPin(pin) {
   if (!pin) return "?";
@@ -99,6 +99,7 @@ function extractMemberParent(refValue) {
 export function extractFunctionMetadata(parseResult) {
   const meta = {
     component: extractOwningComponent(parseResult),
+    entries: [],
     functionName: null,
     parameters: [],
     returns: [],
@@ -109,28 +110,52 @@ export function extractFunctionMetadata(parseResult) {
     dispatchers: new Map(),
   };
 
-  const funcEntry = parseResult.nodes.find((n) => n.nodeClass === "K2Node_FunctionEntry");
-  if (funcEntry) {
-    const fnRef = matchField(funcEntry.raw, "FunctionReference");
-    meta.functionName = extractMemberRefName(fnRef);
-    meta.localVariables = parseLocalVariables(funcEntry.raw);
-    for (const pin of funcEntry.pins) {
-      if (isExecPin(pin)) continue;
-      if (pin.Direction !== "EGPD_Output") continue;
-      meta.parameters.push({ name: pin.PinName, type: typeLabelFromPin(pin) });
-    }
-  } else {
-    const evt = parseResult.nodes.find((n) => n.nodeClass === "K2Node_Event" || n.nodeClass === "K2Node_CustomEvent");
-    if (evt) meta.functionName = evt.friendly;
-  }
-
+  // Returns come from the (single) FunctionResult node; associated with the
+  // function entry below. An event graph has none.
   const funcResult = parseResult.nodes.find((n) => n.nodeClass === "K2Node_FunctionResult");
+  const returns = [];
   if (funcResult) {
     for (const pin of funcResult.pins) {
       if (isExecPin(pin)) continue;
       if (pin.Direction !== "EGPD_Input") continue;
-      meta.returns.push({ name: pin.PinName, type: typeLabelFromPin(pin) });
+      returns.push({ name: pin.PinName, type: typeLabelFromPin(pin) });
     }
+  }
+
+  // Describe every entry point in the paste — events, custom events, function
+  // entries, input actions — in graph order. The diagram already renders each
+  // as its own flow, so the export names each instead of collapsing to the
+  // first. The exec output pin ("then") and the dynamic delegate pin
+  // ("OutputDelegate") on a CustomEvent aren't parameters.
+  for (const node of findEntryNodes(parseResult.nodes)) {
+    const isFunction = node.nodeClass === "K2Node_FunctionEntry";
+    const parameters = [];
+    for (const pin of node.pins) {
+      if (isExecPin(pin)) continue;
+      if (pin.Direction !== "EGPD_Output") continue;
+      if (pin.PinName === "self" || pin.PinName === "OutputDelegate") continue;
+      parameters.push({ name: pin.PinName, type: typeLabelFromPin(pin) });
+    }
+    const fnRef = isFunction ? matchField(node.raw, "FunctionReference") : null;
+    meta.entries.push({
+      kind: isFunction ? "function"
+        : node.nodeClass === "K2Node_CustomEvent" ? "custom-event" : "event",
+      isFunction,
+      name: isFunction ? (extractMemberRefName(fnRef) || node.friendly) : node.friendly,
+      parameters,
+      returns: isFunction ? returns : [],
+      localVariables: isFunction ? parseLocalVariables(node.raw) : [],
+    });
+  }
+
+  // Legacy single-value fields, consumed by the filename derivation and the
+  // single-entry markdown path. Prefer a function entry, else the first entry.
+  const primary = meta.entries.find((e) => e.isFunction) || meta.entries[0];
+  if (primary) {
+    meta.functionName = primary.name;
+    meta.parameters = primary.parameters;
+    meta.returns = primary.returns;
+    meta.localVariables = primary.localVariables;
   }
 
   for (const node of parseResult.nodes) {
@@ -209,15 +234,34 @@ function formatVariableRefs(map) {
   }).join(", ");
 }
 
+function returnsLabel(returns) {
+  return returns.length === 0
+    ? "void"
+    : returns.map((r) => (r.name && r.name !== "ReturnValue" ? r.name + ": " : "") + r.type).join(", ");
+}
+
+// One signature line for an entry: functions show `Name(params)` returns `X`;
+// events show `Name(params)` (the friendly name already carries "Event" /
+// "Custom Event"), with the params omitted when there are none.
+function formatEntrySignature(e) {
+  const params = e.parameters.map((p) => p.name + ": " + p.type).join(", ");
+  if (e.isFunction) {
+    return "`" + e.name + "(" + params + ")` returns `" + returnsLabel(e.returns) + "`";
+  }
+  return "`" + e.name + (params ? "(" + params + ")" : "") + "`";
+}
+
 export function generateFunctionMetadataMarkdown(meta) {
   const lines = [];
   if (meta.component) lines.push("**Component:** `" + meta.component + "`");
-  if (meta.functionName) {
+  if (meta.entries && meta.entries.length > 1) {
+    // Multiple events/functions in one paste — name each, mirroring the
+    // multi-section diagram rather than collapsing to the first entry.
+    lines.push("**Entry Points**");
+    for (const e of meta.entries) lines.push("- " + formatEntrySignature(e));
+  } else if (meta.functionName) {
     const params = meta.parameters.map((p) => p.name + ": " + p.type).join(", ");
-    const returnsLabel = meta.returns.length === 0
-      ? "void"
-      : meta.returns.map((r) => (r.name && r.name !== "ReturnValue" ? r.name + ": " : "") + r.type).join(", ");
-    lines.push("**Function:** `" + meta.functionName + "(" + params + ")` returns `" + returnsLabel + "`");
+    lines.push("**Function:** `" + meta.functionName + "(" + params + ")` returns `" + returnsLabel(meta.returns) + "`");
   }
   if (meta.localVariables.length > 0) {
     lines.push("");

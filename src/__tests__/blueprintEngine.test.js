@@ -3,7 +3,7 @@ import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import {
   parseBlueprint, extractFunctionMetadata, deriveFilenameBase, renderASCII,
-  generateReviewNotes,
+  generateReviewNotes, generateMarkdown,
 } from "../blueprintEngine.js";
 
 // Minimal UE Blueprint copy/paste payload: one CustomEvent feeding one
@@ -1571,6 +1571,58 @@ describe("Select on Enum surfaces its index and per-case option values", () => {
     expect(ascii).toMatch(/Option 0 = 10/);
     expect(ascii).toMatch(/Option 1 = 20/);
     expect(ascii).not.toMatch(/\(ID /);
+  });
+});
+
+describe("multiple entry points in one paste", () => {
+  // An event graph pasted with two events: BeginPlay and a CustomEvent OnDeath
+  // that carries a Damage parameter (plus the dynamic OutputDelegate pin, which
+  // is not a parameter).
+  const PAYLOAD = [
+    'Begin Object Class=/Script/BlueprintGraph.K2Node_Event Name="EvtA"',
+    '   EventReference=(MemberName="BeginPlay")',
+    '   NodePosY=0',
+    '   CustomProperties Pin (PinId=A1,PinName="then",Direction="EGPD_Output",PinType.PinCategory="exec",LinkedTo=(PrintA PA_IN,))',
+    'End Object',
+    'Begin Object Class=/Script/BlueprintGraph.K2Node_CallFunction Name="PrintA"',
+    '   FunctionReference=(MemberName="PrintString")',
+    '   CustomProperties Pin (PinId=PA_IN,PinName="execute",PinType.PinCategory="exec",LinkedTo=(EvtA A1,))',
+    'End Object',
+    'Begin Object Class=/Script/BlueprintGraph.K2Node_CustomEvent Name="EvtB"',
+    '   CustomFunctionName="OnDeath"',
+    '   NodePosY=400',
+    '   CustomProperties Pin (PinId=B0,PinName="OutputDelegate",Direction="EGPD_Output",PinType.PinCategory="delegate")',
+    '   CustomProperties Pin (PinId=BP,PinName="Damage",Direction="EGPD_Output",PinType.PinCategory="real",PinType.PinSubCategory="double")',
+    '   CustomProperties Pin (PinId=B1,PinName="then",Direction="EGPD_Output",PinType.PinCategory="exec",LinkedTo=(PrintB PB_IN,))',
+    'End Object',
+    'Begin Object Class=/Script/BlueprintGraph.K2Node_CallFunction Name="PrintB"',
+    '   FunctionReference=(MemberName="DestroyActor")',
+    '   CustomProperties Pin (PinId=PB_IN,PinName="execute",PinType.PinCategory="exec",LinkedTo=(EvtB B1,))',
+    'End Object',
+  ].join("\n");
+
+  it("collects every entry point, with params (excluding exec/delegate pins)", () => {
+    const meta = extractFunctionMetadata(parseBlueprint(PAYLOAD));
+    expect(meta.entries.map((e) => e.name)).toEqual(["Event Begin Play", "Custom Event: OnDeath"]);
+    const onDeath = meta.entries.find((e) => e.kind === "custom-event");
+    expect(onDeath.parameters.map((p) => p.name)).toEqual(["Damage"]);
+  });
+
+  it("names each entry in the markdown export instead of collapsing to the first", () => {
+    const r = parseBlueprint(PAYLOAD);
+    const md = generateMarkdown(r, renderASCII(r, { showDataPins: true }), { name: "x" });
+    expect(md).toContain("**Entry Points**");
+    expect(md).toContain("- `Event Begin Play`");
+    expect(md).toContain("- `Custom Event: OnDeath(Damage: double)`");
+    // The single-entry "**Function:**" line is not used when there are several.
+    expect(md).not.toContain("**Function:**");
+  });
+
+  it("keeps the single-entry signature line unchanged", () => {
+    const r = parseBlueprint(FUNCTION_PAYLOAD);
+    const md = generateMarkdown(r, renderASCII(r, { showDataPins: true }), { name: "x" });
+    expect(md).toContain("**Function:** `ComputeScore(");
+    expect(md).not.toContain("**Entry Points**");
   });
 });
 
