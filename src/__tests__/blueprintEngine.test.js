@@ -1622,7 +1622,7 @@ describe("multi-output reads and Min/Max operators", () => {
   it("resolves commutative/promotable operators instead of 'Math Op'", () => {
     const ascii = renderASCII(parseBlueprint(PAYLOAD), { showDataPins: true });
     expect(ascii).not.toMatch(/Math Op/);
-    expect(ascii).toMatch(/\bMin\b/);   // Min_DoubleDouble -> Min
-    expect(ascii).toMatch(/\+/);        // OperationName "Add" -> +
+    expect(ascii).toMatch(/Min\(/);     // word operator -> functional form Min(a, b)
+    expect(ascii).toMatch(/\+/);        // symbolic operator stays infix: Add -> +
   });
 });

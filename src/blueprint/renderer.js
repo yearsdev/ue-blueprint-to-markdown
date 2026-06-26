@@ -543,16 +543,18 @@ function isBinaryOpNode(node) {
   );
 }
 
-// Resolve one operand of a binary op, parenthesizing it when its source is
-// itself a binary op so nesting is explicit: "(A * B) - (C * D)", not the
-// precedence-dependent "A * B - C * D". Only the wired-source case can nest;
-// inline literals and leaf variables never need wrapping.
+// Resolve one operand of a binary op, parenthesizing it when its source renders
+// as an INFIX expression so nesting is explicit: "(A * B) - (C * D)", not the
+// precedence-dependent "A * B - C * D". A functional-form source (Min(A, B)) is
+// already self-delimiting, so it's never wrapped — "(Min(A, B))" would be noise.
+// Only the wired-source case can nest; literals and leaf variables never wrap.
 function describeBinaryOperand(pin, byName, depth, enumRegistry) {
   const rendered = describeOperand(pin, byName, depth, enumRegistry);
   if (pin.LinkedTo.length > 0) {
     const link = pin.LinkedTo[0];
     const resolved = resolveThroughKnots(link.nodeName, link.pinName, byName);
-    if (isBinaryOpNode(byName.get(resolved.nodeName))) return "(" + rendered + ")";
+    const src = byName.get(resolved.nodeName);
+    if (isBinaryOpNode(src) && rendersInfix(src)) return "(" + rendered + ")";
   }
   return rendered;
 }
@@ -583,6 +585,23 @@ function operatorToken(node) {
   return null;
 }
 
+// Which operators read naturally infix ("A op B") vs functional ("op(A, B)").
+// Punctuation symbols (+, -, *, <, ==) and the logical words AND/OR/NOT are
+// infix; every other word operator (Min, Max, Dot, Atan2, ...) is functional,
+// where "A Min B" would be ambiguous prose but "Min(A, B)" is unmistakable.
+function isInfixToken(token) {
+  return !/[A-Za-z]/.test(token) || /^(AND|OR|NOT)$/i.test(token);
+}
+
+// Whether a binary-op node renders in infix form. Enum (in)equality nodes
+// always render as == / !=, so they're infix regardless of token.
+function rendersInfix(node) {
+  if (node.nodeClass === "K2Node_EnumEquality" || node.nodeClass === "K2Node_EnumInequality") {
+    return true;
+  }
+  return isInfixToken(operatorToken(node) || node.friendly);
+}
+
 function describeBinaryOp(node, byName, depth, enumRegistry) {
   const inputs = node.pins
     .filter((p) => p.Direction === "EGPD_Input" && !isExecPin(p) && p.PinName !== "self" &&
@@ -590,7 +609,8 @@ function describeBinaryOp(node, byName, depth, enumRegistry) {
     .map((p) => describeBinaryOperand(p, byName, depth, enumRegistry));
 
   const symbol = operatorToken(node) || node.friendly;
-  return inputs.join(" " + symbol + " ");
+  if (isInfixToken(symbol)) return inputs.join(" " + symbol + " ");
+  return symbol + "(" + inputs.join(", ") + ")";
 }
 
 // Max characters for a data-pin subline inside a flow box before it's clipped
