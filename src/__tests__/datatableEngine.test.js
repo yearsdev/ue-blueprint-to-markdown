@@ -84,21 +84,26 @@ describe("render + markdown", () => {
     expect(ascii).toMatch(/EffectType\s+—/);
   });
 
-  it("single row -> horizontal columnar markdown table", () => {
+  it("single row -> vertical Field|Value markdown table", () => {
     const p = parseDataTable(SPELL_ROW);
     const md = generateDataTableMarkdown(p, renderDataTableASCII(p), { name: "DT_NPCSpells_New" });
     expect(md).toContain("# DT_NPCSpells_New");
-    expect(md).toContain("| Row | SpellID | SpellName |");
-    expect(md).toMatch(/\| Lesser_Heal \| Lesser_Heal \| Lesser Heal \|.*\| Heal \|/);
+    expect(md).toContain("## Lesser_Heal");
+    expect(md).toContain("| Field | Value |");
+    expect(md).toContain("| SpellName | Lesser Heal |");
+    expect(md).toContain("| Magnitude | 40 |");
+    // No redundant ASCII Detail block in the export.
+    expect(md).not.toContain("## Detail");
   });
 
-  it("many rows -> columnar markdown table, one line per record", () => {
+  it("many rows -> one vertical table section per row", () => {
     const text = 'Lesser_Heal,(SpellID="Lesser_Heal",Magnitude=40.000000)\nGreater_Heal,(SpellID="Greater_Heal",Magnitude=80.000000)';
     const p = parseDataTable(text);
     const md = generateDataTableMarkdown(p, renderDataTableASCII(p), {});
-    expect(md).toContain("| Row | SpellID | Magnitude |");
-    expect(md).toContain("| Lesser_Heal | Lesser_Heal | 40 |");
-    expect(md).toContain("| Greater_Heal | Greater_Heal | 80 |");
+    expect(md).toContain("## Lesser_Heal");
+    expect(md).toContain("## Greater_Heal");
+    expect(md).toContain("| SpellID | Greater_Heal |");
+    expect(md).toContain("| Magnitude | 80 |");
   });
 
   it("flags rows with missing fields", () => {

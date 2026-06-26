@@ -78,23 +78,21 @@ export function generateDataTableMarkdown(parsed, ascii, opts) {
   if (o.timestamp) { lines.push(""); lines.push("Generated " + o.timestamp + "."); }
   lines.push("");
 
-  if (rows.length > 0) {
-    lines.push("## Rows");
+  // One vertical Field | Value table per row. Keeps the export tall and
+  // readable regardless of field count (a wide N-column table is unreadable for
+  // 20+ field structs), and tall enough that Claude collapses it into a pasted
+  // attachment rather than dumping it inline. The aligned ASCII view already
+  // lives in the Editor pane, so no redundant code block is emitted here.
+  rows.forEach((r, i) => {
+    if (i > 0) lines.push("");
+    lines.push("## " + r.name);
     lines.push("");
-    lines.push("| Row | " + fields.map(mdCell).join(" | ") + " |");
-    lines.push("| --- |" + fields.map(() => " --- ").join("|") + "|");
-    for (const r of rows) {
-      const cells = fields.map((f) => mdCell(formatValue(r.fieldMap.has(f) ? r.fieldMap.get(f) : "")));
-      lines.push("| " + mdCell(r.name) + " | " + cells.join(" | ") + " |");
+    lines.push("| Field | Value |");
+    lines.push("| --- | --- |");
+    for (const e of r.entries) {
+      lines.push("| " + mdCell(e.key) + " | " + mdCell(formatValue(e.value)) + " |");
     }
-  }
-
-  lines.push("");
-  lines.push("## Detail");
-  lines.push("");
-  lines.push("```");
-  lines.push(ascii);
-  lines.push("```");
+  });
 
   const notes = generateDataTableReviewNotes(parsed);
   if (notes.length > 0) {
