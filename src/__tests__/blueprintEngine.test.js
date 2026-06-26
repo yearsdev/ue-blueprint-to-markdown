@@ -1573,3 +1573,56 @@ describe("Select on Enum surfaces its index and per-case option values", () => {
     expect(ascii).not.toMatch(/\(ID /);
   });
 });
+
+describe("multi-output reads and Min/Max operators", () => {
+  // GetHealth exposes two output data pins (Health, MaxHealth). The Health pin
+  // feeds an Add and the MaxHealth pin feeds a Min. Before the fix both wires
+  // resolved to the node's first output and printed a bare "Get Health()",
+  // losing the MaxHealth read entirely. The Min node is the older commutative
+  // operator with only a typed FunctionReference (Min_DoubleDouble) and no
+  // OperationName, so it exercises the member-base fallback that previously
+  // collapsed to "Math Op".
+  const PAYLOAD = [
+    'Begin Object Class=/Script/BlueprintGraph.K2Node_Event Name="Evt"',
+    '   CustomProperties Pin (PinId=E1,PinName="then",Direction="EGPD_Output",PinType.PinCategory="exec",LinkedTo=(SetR SR_IN,))',
+    'End Object',
+    'Begin Object Class=/Script/BlueprintGraph.K2Node_VariableSet Name="SetR"',
+    '   VariableReference=(MemberName="Result")',
+    '   CustomProperties Pin (PinId=SR_IN,PinName="execute",PinType.PinCategory="exec",LinkedTo=(Evt E1,))',
+    '   CustomProperties Pin (PinId=SR_V,PinName="Result",PinType.PinCategory="real",LinkedTo=(AddNode ADD_OUT,))',
+    'End Object',
+    'Begin Object Class=/Script/BlueprintGraph.K2Node_PromotableOperator Name="AddNode"',
+    '   OperationName="Add"',
+    '   FunctionReference=(MemberName="Add_DoubleDouble")',
+    '   CustomProperties Pin (PinId=ADD_A,PinName="A",PinType.PinCategory="real",LinkedTo=(GetHealth GH_H,))',
+    '   CustomProperties Pin (PinId=ADD_B,PinName="B",PinType.PinCategory="real",LinkedTo=(MinNode MIN_OUT,))',
+    '   CustomProperties Pin (PinId=ADD_OUT,PinName="ReturnValue",Direction="EGPD_Output",PinType.PinCategory="real",LinkedTo=(SetR SR_V,))',
+    'End Object',
+    'Begin Object Class=/Script/BlueprintGraph.K2Node_CommutativeAssociativeBinaryOperator Name="MinNode"',
+    '   FunctionReference=(MemberName="Min_DoubleDouble")',
+    '   CustomProperties Pin (PinId=MIN_A,PinName="A",PinType.PinCategory="real",LinkedTo=(GetHealth GH_M,))',
+    '   CustomProperties Pin (PinId=MIN_B,PinName="B",PinType.PinCategory="real",DefaultValue="100")',
+    '   CustomProperties Pin (PinId=MIN_OUT,PinName="ReturnValue",Direction="EGPD_Output",PinType.PinCategory="real",LinkedTo=(AddNode ADD_B,))',
+    'End Object',
+    'Begin Object Class=/Script/BlueprintGraph.K2Node_CallFunction Name="GetHealth"',
+    '   FunctionReference=(MemberName="GetHealth")',
+    '   CustomProperties Pin (PinId=GH_SELF,PinName="self",PinType.PinCategory="object",DefaultObject="/Script/Engine.Default__KismetMathLibrary")',
+    '   CustomProperties Pin (PinId=GH_H,PinName="Health",Direction="EGPD_Output",PinType.PinCategory="real",LinkedTo=(AddNode ADD_A,))',
+    '   CustomProperties Pin (PinId=GH_M,PinName="MaxHealth",Direction="EGPD_Output",PinType.PinCategory="real",LinkedTo=(MinNode MIN_A,))',
+    'End Object',
+  ].join("\n");
+
+  it("annotates each wire with its specific source output pin", () => {
+    const ascii = renderASCII(parseBlueprint(PAYLOAD), { showDataPins: true });
+    // Both reads survive and name the pin they came from.
+    expect(ascii).toMatch(/\.Health\b/);
+    expect(ascii).toMatch(/\.MaxHealth\b/);
+  });
+
+  it("resolves commutative/promotable operators instead of 'Math Op'", () => {
+    const ascii = renderASCII(parseBlueprint(PAYLOAD), { showDataPins: true });
+    expect(ascii).not.toMatch(/Math Op/);
+    expect(ascii).toMatch(/\bMin\b/);   // Min_DoubleDouble -> Min
+    expect(ascii).toMatch(/\+/);        // OperationName "Add" -> +
+  });
+});

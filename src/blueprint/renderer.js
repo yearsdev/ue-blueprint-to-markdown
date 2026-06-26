@@ -237,6 +237,23 @@ function describeTargetContext(node, byName, depth, enumRegistry) {
   return describeDataSource(byName.get(resolved.nodeName), resolved.pinName, byName, depth + 1, enumRegistry);
 }
 
+// A node can expose several output data pins — a function returning Health AND
+// MaxHealth, a call with by-ref out params, a cast's value plus bSuccess. A
+// wire reads exactly one of them (pinName, the resolved source output). When
+// there's more than one output, annotate which pin this read came from so two
+// wires off the same node don't both collapse to "GetHealth()" and silently
+// drop the second read. The lone canonical ReturnValue stays unannotated so the
+// common single-return call still renders as a clean "Foo()".
+function outputPinSuffix(node, pinName) {
+  const outs = node.pins.filter((p) => p.Direction === "EGPD_Output" && !isExecPin(p));
+  if (outs.length <= 1) return "";
+  if (!pinName || pinName === "ReturnValue") return "";
+  const pin = outs.find((p) => p.PinName === pinName);
+  if (!pin) return "";
+  const label = pin.PinFriendlyName || pinName.replace(/_\d+_[A-F0-9]+$/i, "");
+  return label ? "." + label : "";
+}
+
 function describeDataSource(node, pinName, byName, depth, enumRegistry) {
   if (!node) return "?";
   // Expansion depth guard. Set high enough to walk a realistic operand chain to
@@ -305,7 +322,8 @@ function describeDataSource(node, pinName, byName, depth, enumRegistry) {
     if (isOperatorCallFunction(node)) return describeBinaryOp(node, byName, depth, enumRegistry);
     const ctx = describeTargetContext(node, byName, depth, enumRegistry);
     const args = describeCallArguments(node, byName, depth, enumRegistry);
-    return (ctx ? ctx + "." : "") + node.friendly + "(" + args.join(", ") + ")";
+    return (ctx ? ctx + "." : "") + node.friendly + "(" + args.join(", ") + ")" +
+      outputPinSuffix(node, pinName);
   }
   if (node.nodeClass === "K2Node_DynamicCast") {
     // Show what's being cast (e.g. Cast To Enemy(ArrayElem)) so a cast feeding a
@@ -539,26 +557,39 @@ function describeBinaryOperand(pin, byName, depth, enumRegistry) {
   return rendered;
 }
 
+// Resolve the infix token for a binary operator node. PromotableOperator names
+// the op bare on OperationName ("Add", "Min", "NotEqual"); both promotable and
+// the older CommutativeAssociativeBinaryOperator also carry a typed
+// KismetMathLibrary member on FunctionReference (Add_DoubleDouble, Min_IntInt).
+// Map the full member name first — that's how comparisons/booleans already
+// resolve to <, <=, AND — then fall back to the bare op before the type suffix
+// (Min_DoubleDouble -> Min) so Min/Max no longer collapse to "Math Op".
+function operatorToken(node) {
+  const opName = matchField(node.raw, "OperationName");
+  if (opName) {
+    const cleaned = opName.replace(/"/g, "").trim();
+    if (cleaned) return OPERATOR_SYMBOLS[cleaned] || cleaned;
+  }
+  const fnRef = matchField(node.raw, "FunctionReference");
+  if (fnRef) {
+    const m = fnRef.match(/MemberName="?([^",)]+)"?/);
+    if (m) {
+      if (OPERATOR_SYMBOLS[m[1]]) return OPERATOR_SYMBOLS[m[1]];
+      const base = m[1].split("_")[0];
+      if (OPERATOR_SYMBOLS[base]) return OPERATOR_SYMBOLS[base];
+      if (base) return base;
+    }
+  }
+  return null;
+}
+
 function describeBinaryOp(node, byName, depth, enumRegistry) {
   const inputs = node.pins
     .filter((p) => p.Direction === "EGPD_Input" && !isExecPin(p) && p.PinName !== "self" &&
       operandHasValue(p, enumRegistry))
     .map((p) => describeBinaryOperand(p, byName, depth, enumRegistry));
 
-  let symbol = null;
-  const fnRef = matchField(node.raw, "FunctionReference");
-  if (fnRef) {
-    const m = fnRef.match(/MemberName="?([^",)]+)"?/);
-    if (m && OPERATOR_SYMBOLS[m[1]]) symbol = OPERATOR_SYMBOLS[m[1]];
-  }
-  if (!symbol) {
-    const opName = matchField(node.raw, "OperationName");
-    if (opName) {
-      const cleaned = opName.replace(/"/g, "").trim();
-      symbol = OPERATOR_SYMBOLS[cleaned] || cleaned;
-    }
-  }
-  if (!symbol) symbol = node.friendly;
+  const symbol = operatorToken(node) || node.friendly;
   return inputs.join(" " + symbol + " ");
 }
 

@@ -244,16 +244,25 @@ function friendlyNameFor(node) {
     const tn = matchField(block, "TimelineName");
     return "Timeline: " + extractQuoted(tn || "?");
   }
-  if (cls === "K2Node_CommutativeAssociativeBinaryOperator") return "Math Op";
   if (cls === "K2Node_MakeArray") return "Make Array";
   if (cls === "K2Node_GetArrayItem") return "Get Array Item";
-  if (cls === "K2Node_PromotableOperator") {
+  // Both operator node classes name the operation: PromotableOperator on a bare
+  // OperationName ("Add", "Min"), and both carry a typed KismetMathLibrary
+  // member on FunctionReference (Add_DoubleDouble, Min_IntInt). Prefer the bare
+  // op name; otherwise humanize the member. Falling through to "Math Op" lost
+  // which operation the node performed.
+  if (cls === "K2Node_CommutativeAssociativeBinaryOperator" || cls === "K2Node_PromotableOperator") {
+    const op = matchField(block, "OperationName");
+    if (op) {
+      const cleaned = op.replace(/"/g, "").trim();
+      if (cleaned) return humanize(cleaned);
+    }
     const ref = matchField(block, "FunctionReference");
     if (ref) {
       const m = ref.match(/MemberName="?([^",)]+)"?/);
       if (m) return humanize(m[1]);
     }
-    return "Op";
+    return "Math Op";
   }
 
   return cls.replace(/^K2Node_/, "").replace(/_/g, " ");
