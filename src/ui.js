@@ -74,6 +74,7 @@ export function getStyles(m) {
     tabActive:  { background:C.accentBg,borderColor:C.accent,color:C.accent,fontWeight:700 },
     actionBtn:  { background:"transparent",border:`1px solid ${C.border}`,color:C.textMuted,padding:m?"8px 10px":"3px 10px",borderRadius:"3px",cursor:"pointer",fontSize:m?"12px":"10px",fontFamily:"inherit",whiteSpace:"nowrap",minHeight:th },
     exportBtn:  { borderColor:C.accentBorder,color:C.accent },
+    paneHeaderBtn:{ background:"transparent",border:`1px solid ${C.border}`,color:C.textMuted,padding:m?"4px 8px":"2px 8px",borderRadius:"3px",cursor:"pointer",fontSize:m?"11px":"10px",fontFamily:"inherit",whiteSpace:"nowrap",textTransform:"none",letterSpacing:0 },
     divider:    { color:C.textDark,padding:"0 2px" },
     notification:{ padding:m?"10px 16px":"6px 16px",fontSize:m?"13px":"11px",borderBottom:`1px solid ${C.border}`,flexShrink:0 },
     warningBar: { display:"flex",gap:"12px",padding:m?"8px 12px":"4px 16px",background:C.warningBg,borderBottom:`1px solid ${C.warningBorder}`,flexShrink:0,flexWrap:"wrap" },

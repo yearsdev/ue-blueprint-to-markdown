@@ -334,7 +334,14 @@ export default function App() {
           <div style={paneStyle()}>
             <div style={paneHeader}>
               <span>ASCII Diagram</span>
-              <span>{ascii ? ascii.split("\n").length + " lines" : "idle"}</span>
+              {mobile ? (
+                <div style={{ display: "flex", gap: "6px", alignItems: "center" }}>
+                  <button style={S.paneHeaderBtn} onClick={copyAscii} disabled={!ascii}>Copy ASCII</button>
+                  <button style={{ ...S.paneHeaderBtn, ...S.exportBtn }} onClick={copyMd} disabled={!parsed}>Copy MD</button>
+                </div>
+              ) : (
+                <span>{ascii ? ascii.split("\n").length + " lines" : "idle"}</span>
+              )}
             </div>
             <pre style={{
               flex: 1, margin: 0, padding: mobile ? "10px" : "12px",
